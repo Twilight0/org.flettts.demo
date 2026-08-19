@@ -276,8 +276,11 @@ class TtsService:
 
             if play_immediately and audio_data and self._current_audio_base64:
                 try:
-                    from pyodide.ffi import to_js
-                    js.postMessage(to_js({"tts_b64": self._current_audio_base64}))
+                    # Build a plain JS object (not a Pyodide proxy) so
+                    # postMessage's structured clone algorithm can transfer it
+                    # from the worker to the main thread.
+                    b64 = self._current_audio_base64
+                    js.eval(f"self.postMessage({{tts_b64: '{b64}'}})")
                 except Exception as ex:
                     print("Error posting audio to main window:", ex)
 
@@ -310,8 +313,7 @@ class TtsService:
         if IS_WEB:
             try:
                 import js
-                from pyodide.ffi import to_js
-                js.postMessage(to_js({"tts_stop": True}))
+                js.eval("self.postMessage({tts_stop: true})")
             except Exception:
                 pass
         else:
