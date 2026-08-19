@@ -266,9 +266,36 @@ class TtsService:
             if play_immediately and audio_data:
                 b64_audio = self._current_audio_base64
                 js.eval(
-                    f"if (window.__flet_tts_audio) window.__flet_tts_audio.pause();"
-                    f"window.__flet_tts_audio = new Audio('data:audio/mp3;base64,{b64_audio}');"
-                    f"window.__flet_tts_audio.play();"
+                    "(function() {"
+                    "  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : {});"
+                    "  var b64 = '" + b64_audio + "';"
+                    "  if (typeof window !== 'undefined' && typeof window.Audio !== 'undefined') {"
+                    "    if (window.__flet_tts_audio) window.__flet_tts_audio.pause();"
+                    "    window.__flet_tts_audio = new Audio('data:audio/mp3;base64,' + b64);"
+                    "    window.__flet_tts_audio.play();"
+                    "  } else {"
+                    "    try {"
+                    "      var AudioCtx = g.AudioContext || g.webkitAudioContext;"
+                    "      if (AudioCtx) {"
+                    "        if (g.__flet_audio_ctx) try { g.__flet_audio_ctx.close(); } catch(e){}"
+                    "        var ctx = new AudioCtx();"
+                    "        g.__flet_audio_ctx = ctx;"
+                    "        var binaryStr = atob(b64);"
+                    "        var bytes = new Uint8Array(binaryStr.length);"
+                    "        for (var i = 0; i < binaryStr.length; i++) {"
+                    "          bytes[i] = binaryStr.charCodeAt(i);"
+                    "        }"
+                    "        ctx.decodeAudioData(bytes.buffer, function(buffer) {"
+                    "          var src = ctx.createBufferSource();"
+                    "          src.buffer = buffer;"
+                    "          src.connect(ctx.destination);"
+                    "          src.start(0);"
+                    "          g.__flet_audio_source = src;"
+                    "        });"
+                    "      }"
+                    "    } catch(err) { console.error('AudioContext error:', err); }"
+                    "  }"
+                    "})();"
                 )
 
             if self.on_complete and audio_data:
@@ -300,7 +327,17 @@ class TtsService:
             try:
                 import js
                 js.eval(
-                    "if (window.__flet_tts_audio) { window.__flet_tts_audio.pause(); window.__flet_tts_audio.currentTime = 0; }"
+                    "(function() {"
+                    "  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : {});"
+                    "  if (typeof window !== 'undefined' && window.__flet_tts_audio) {"
+                    "    window.__flet_tts_audio.pause();"
+                    "    window.__flet_tts_audio.currentTime = 0;"
+                    "  }"
+                    "  if (g.__flet_audio_ctx) {"
+                    "    try { g.__flet_audio_ctx.close(); } catch(e){}"
+                    "    g.__flet_audio_ctx = null;"
+                    "  }"
+                    "})();"
                 )
             except Exception:
                 pass
