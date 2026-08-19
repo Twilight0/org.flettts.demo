@@ -377,6 +377,7 @@ def main(page: ft.Page):
         page.update()
 
         t_start = time.time()
+        is_web = page.web or sys.platform == "emscripten"
         try:
             audio_data = await tts.speak(text, play_immediately=True)
             duration_s = time.time() - t_start
@@ -385,7 +386,7 @@ def main(page: ft.Page):
                 latency_label.value = f"Finished ({duration_s:.2f}s, {len(audio_data):,} B)"
                 status_icon.name = ft.Icons.CHECK_CIRCLE_OUTLINE
                 status_icon.color = ft.Colors.GREEN_400
-                status_label.value = "Speech completed"
+                status_label.value = "Playing audio..." if is_web else "Speech completed"
                 save_btn.disabled = False
             else:
                 status_icon.name = ft.Icons.CHECK_CIRCLE_OUTLINE
@@ -397,10 +398,13 @@ def main(page: ft.Page):
             status_icon.color = ft.Colors.RED_400
             status_label.value = f"Error: {str(ex)}"
             show_snack(f"Speech failed: {str(ex)}", is_error=True)
+            is_web = False  # disable stop on error
         finally:
             speak_progress.visible = False
             speak_btn.disabled = False
-            stop_btn.disabled = True
+            # On web, audio plays asynchronously in the main thread after
+            # speak() returns, so keep the stop button enabled.
+            stop_btn.disabled = not is_web
             page.update()
 
     async def on_stop_clicked(e):
