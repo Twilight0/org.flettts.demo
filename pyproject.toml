@@ -1,0 +1,33 @@
+[project]
+name = "org.flettts.demo"
+version = "1.0.0"
+description = "Flet TTS pure Python demo app using edge-tts"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Twilight", email = "twilight@example.com" }
+]
+dependencies = [
+    "flet>=0.86.5",
+    "edge-tts>=7.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "flet-cli>=0.86.5",
+    "flet-desktop>=0.86.5",
+    "flet-web>=0.86.5",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.flet]
+org = "org.flettts"
+product = "Flet TTS demo"
+bundle-id = "org.flettts.demo"
+
+[tool.flet.app]
+path = "src"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
