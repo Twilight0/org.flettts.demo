@@ -163,3 +163,7 @@ cython_debug/
 storage/
 .flet/
 build/
+
+# Wrangler / Cloudflare
+.wrangler/
+cloudflare-proxy/.wrangler/
