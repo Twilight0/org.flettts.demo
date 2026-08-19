@@ -5,8 +5,9 @@ import json
 import os
 import shutil
 import sys
+import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional
-import urllib.request
 
 IS_WEB = sys.platform == "emscripten" or "pyodide" in sys.modules
 PROXY_URL = "https://edge-tts-proxy.twilight0.workers.dev"
@@ -17,7 +18,7 @@ class TtsService:
     """
     Text-to-Speech service with cross-platform support:
     - Desktop / Native: Fast local streaming to audio pipeline via edge-tts.
-    - Web / WASM (GitHub Pages): Browser Web Audio & WebSocket via Cloudflare proxy.
+    - Web / WASM (GitHub Pages): Browser WebSockets & HTTPS pyfetch via Cloudflare proxy.
     """
 
     def __init__(
@@ -171,7 +172,6 @@ class TtsService:
     async def _speak_web(self, text: str, play_immediately: bool) -> Optional[bytes]:
         """Web/Pyodide synthesis using browser WebSockets and Cloudflare Proxy."""
         import js
-        import uuid
         from pyodide.ffi import create_proxy
 
         loop = asyncio.get_event_loop()
@@ -181,7 +181,7 @@ class TtsService:
 
         def on_open(event):
             try:
-                ts = js.Date.new().toString()
+                ts = time.strftime("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)", time.gmtime())
                 req_id = uuid.uuid4().hex
 
                 # 1. Send speech.config
@@ -274,41 +274,6 @@ class TtsService:
                 base64.b64encode(audio_data).decode("utf-8") if audio_data else None
             )
 
-            if play_immediately and audio_data:
-                b64_audio = self._current_audio_base64
-                js.eval(
-                    "(function() {"
-                    "  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : {});"
-                    "  var b64 = '" + b64_audio + "';"
-                    "  if (typeof window !== 'undefined' && typeof window.Audio !== 'undefined') {"
-                    "    if (window.__flet_tts_audio) window.__flet_tts_audio.pause();"
-                    "    window.__flet_tts_audio = new Audio('data:audio/mp3;base64,' + b64);"
-                    "    window.__flet_tts_audio.play();"
-                    "  } else {"
-                    "    try {"
-                    "      var AudioCtx = g.AudioContext || g.webkitAudioContext;"
-                    "      if (AudioCtx) {"
-                    "        if (g.__flet_audio_ctx) try { g.__flet_audio_ctx.close(); } catch(e){}"
-                    "        var ctx = new AudioCtx();"
-                    "        g.__flet_audio_ctx = ctx;"
-                    "        var binaryStr = atob(b64);"
-                    "        var bytes = new Uint8Array(binaryStr.length);"
-                    "        for (var i = 0; i < binaryStr.length; i++) {"
-                    "          bytes[i] = binaryStr.charCodeAt(i);"
-                    "        }"
-                    "        ctx.decodeAudioData(bytes.buffer, function(buffer) {"
-                    "          var src = ctx.createBufferSource();"
-                    "          src.buffer = buffer;"
-                    "          src.connect(ctx.destination);"
-                    "          src.start(0);"
-                    "          g.__flet_audio_source = src;"
-                    "        });"
-                    "      }"
-                    "    } catch(err) { console.error('AudioContext error:', err); }"
-                    "  }"
-                    "})();"
-                )
-
             if self.on_complete and audio_data:
                 data = {"bytes": len(audio_data)}
                 if inspect.iscoroutinefunction(self.on_complete):
@@ -335,31 +300,12 @@ class TtsService:
     async def stop(self) -> None:
         """Instantly stop speech and terminate playback across platforms."""
         self._is_speaking = False
-        if IS_WEB:
+        if not IS_WEB and self._active_player_proc:
             try:
-                import js
-                js.eval(
-                    "(function() {"
-                    "  var g = typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : {});"
-                    "  if (typeof window !== 'undefined' && window.__flet_tts_audio) {"
-                    "    window.__flet_tts_audio.pause();"
-                    "    window.__flet_tts_audio.currentTime = 0;"
-                    "  }"
-                    "  if (g.__flet_audio_ctx) {"
-                    "    try { g.__flet_audio_ctx.close(); } catch(e){}"
-                    "    g.__flet_audio_ctx = null;"
-                    "  }"
-                    "})();"
-                )
+                self._active_player_proc.kill()
             except Exception:
                 pass
-        else:
-            if self._active_player_proc:
-                try:
-                    self._active_player_proc.kill()
-                except Exception:
-                    pass
-                self._active_player_proc = None
+            self._active_player_proc = None
 
     async def set_voice(self, voice: str) -> None:
         self.voice = voice
@@ -377,13 +323,11 @@ class TtsService:
         """Fetch available voices (via Cloudflare Proxy on Web, or edge-tts on Desktop)."""
         if IS_WEB:
             try:
-                req = urllib.request.Request(
-                    f"{PROXY_URL}/voices",
-                    headers={"User-Agent": "FletTTS-Web/1.0"},
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    voices = json.loads(resp.read().decode("utf-8"))
-            except Exception:
+                from pyodide.http import pyfetch
+                resp = await pyfetch(f"{PROXY_URL}/voices")
+                voices = await resp.json()
+            except Exception as e:
+                print("Failed to fetch voices via pyfetch:", e)
                 return []
         else:
             import edge_tts
