@@ -387,14 +387,6 @@ def main(page: ft.Page):
                 status_icon.color = ft.Colors.GREEN_400
                 status_label.value = "Speech completed"
                 save_btn.disabled = False
-
-                # On Web/Pyodide, trigger playback on the main browser window DOM
-                if page.web or sys.platform == "emscripten":
-                    b64 = await tts.get_audio_base64()
-                    if b64:
-                        page.launch_url(
-                            f"javascript:if(window.__flet_tts_audio){{window.__flet_tts_audio.pause();}}window.__flet_tts_audio=new Audio('data:audio/mp3;base64,{b64}');window.__flet_tts_audio.play();"
-                        )
             else:
                 status_icon.name = ft.Icons.CHECK_CIRCLE_OUTLINE
                 status_icon.color = ft.Colors.GREEN_400
@@ -413,10 +405,6 @@ def main(page: ft.Page):
 
     async def on_stop_clicked(e):
         await tts.stop()
-        if page.web or sys.platform == "emscripten":
-            page.launch_url(
-                "javascript:if(window.__flet_tts_audio){window.__flet_tts_audio.pause();window.__flet_tts_audio.currentTime=0;}"
-            )
         status_icon.name = ft.Icons.STOP_CIRCLE
         status_icon.color = ft.Colors.AMBER_400
         status_label.value = "Stopped"

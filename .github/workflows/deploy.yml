@@ -44,6 +44,33 @@ jobs:
       - name: Build Flet Web App
         run: |
           yes | uv run flet build web --base-url /org.flettts.demo/
+          python3 -c "
+          with open('build/web/python.js', 'r') as f:
+              content = f.read()
+          target = 'app.worker.onmessage = (event) => {'
+          replacement = '''app.worker.onmessage = (event) => {
+                  if (event.data && event.data.tts_b64) {
+                      if (window.__flet_tts_audio) {
+                          try { window.__flet_tts_audio.pause(); } catch(e){}
+                      }
+                      window.__flet_tts_audio = new Audio('data:audio/mp3;base64,' + event.data.tts_b64);
+                      window.__flet_tts_audio.play().catch(function(err){ console.log('Audio playback error:', err); });
+                      return;
+                  }
+                  if (event.data && event.data.tts_stop) {
+                      if (window.__flet_tts_audio) {
+                          try { window.__flet_tts_audio.pause(); window.__flet_tts_audio.currentTime = 0; } catch(e){}
+                      }
+                      return;
+                  }'''
+          if target in content:
+              content = content.replace(target, replacement, 1)
+              with open('build/web/python.js', 'w') as f:
+                  f.write(content)
+              print('Successfully injected HTML5 web audio handler into python.js')
+          else:
+              print('Warning: Target app.worker.onmessage not found in python.js')
+          "
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5

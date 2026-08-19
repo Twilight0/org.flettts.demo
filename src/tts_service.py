@@ -274,6 +274,13 @@ class TtsService:
                 base64.b64encode(audio_data).decode("utf-8") if audio_data else None
             )
 
+            if play_immediately and audio_data and self._current_audio_base64:
+                try:
+                    from pyodide.ffi import to_js
+                    js.postMessage(to_js({"tts_b64": self._current_audio_base64}))
+                except Exception as ex:
+                    print("Error posting audio to main window:", ex)
+
             if self.on_complete and audio_data:
                 data = {"bytes": len(audio_data)}
                 if inspect.iscoroutinefunction(self.on_complete):
@@ -300,12 +307,20 @@ class TtsService:
     async def stop(self) -> None:
         """Instantly stop speech and terminate playback across platforms."""
         self._is_speaking = False
-        if not IS_WEB and self._active_player_proc:
+        if IS_WEB:
             try:
-                self._active_player_proc.kill()
+                import js
+                from pyodide.ffi import to_js
+                js.postMessage(to_js({"tts_stop": True}))
             except Exception:
                 pass
-            self._active_player_proc = None
+        else:
+            if self._active_player_proc:
+                try:
+                    self._active_player_proc.kill()
+                except Exception:
+                    pass
+                self._active_player_proc = None
 
     async def set_voice(self, voice: str) -> None:
         self.voice = voice
