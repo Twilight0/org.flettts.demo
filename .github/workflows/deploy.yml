@@ -28,7 +28,7 @@ jobs:
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.29.0'
+          flutter-version: '3.44.8'
           channel: 'stable'
           cache: true
 
@@ -43,7 +43,7 @@ jobs:
 
       - name: Build Flet Web App
         run: |
-          uv run flet build web --base-url /org.flettts.demo/
+          yes | uv run flet build web --base-url /org.flettts.demo/
 
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
