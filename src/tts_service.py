@@ -171,6 +171,7 @@ class TtsService:
     async def _speak_web(self, text: str, play_immediately: bool) -> Optional[bytes]:
         """Web/Pyodide synthesis using browser WebSockets and Cloudflare Proxy."""
         import js
+        import uuid
         from pyodide.ffi import create_proxy
 
         loop = asyncio.get_event_loop()
@@ -179,63 +180,73 @@ class TtsService:
         audio_chunks = []
 
         def on_open(event):
-            ts = js.Date.new().toString()
-            req_id = js.crypto.randomUUID().replaceAll("-", "")
+            try:
+                ts = js.Date.new().toString()
+                req_id = uuid.uuid4().hex
 
-            # 1. Send speech.config
-            config_msg = (
-                f"X-Timestamp:{ts}\r\n"
-                "Content-Type:application/json; charset=utf-8\r\n"
-                "Path:speech.config\r\n\r\n"
-                '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n'
-            )
-            ws.send(config_msg)
+                # 1. Send speech.config
+                config_msg = (
+                    f"X-Timestamp:{ts}\r\n"
+                    "Content-Type:application/json; charset=utf-8\r\n"
+                    "Path:speech.config\r\n\r\n"
+                    '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n'
+                )
+                ws.send(config_msg)
 
-            # 2. Send SSML
-            escaped_text = (
-                text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace('"', "&quot;")
-                .replace("'", "&apos;")
-            )
-            ssml = (
-                f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>"
-                f"<voice name='{self.voice}'>"
-                f"<prosody pitch='{self.pitch}' rate='{self.rate}' volume='{self.volume}'>"
-                f"{escaped_text}"
-                f"</prosody></voice></speak>"
-            )
-            ssml_msg = (
-                f"X-RequestId:{req_id}\r\n"
-                "Content-Type:application/ssml+xml\r\n"
-                f"X-Timestamp:{ts}Z\r\n"
-                f"Path:ssml\r\n\r\n{ssml}"
-            )
-            ws.send(ssml_msg)
-
-        async def process_binary_data(array_buffer):
-            uint8 = js.Uint8Array.new(array_buffer)
-            if uint8.length < 2:
-                return
-            view = js.DataView.new(array_buffer)
-            header_len = view.getUint16(0, False)
-            if uint8.length > 2 + header_len:
-                audio_slice = uint8.slice(2 + header_len)
-                audio_bytes = bytes(audio_slice.to_py())
-                audio_chunks.append(audio_bytes)
+                # 2. Send SSML
+                escaped_text = (
+                    text.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace('"', "&quot;")
+                    .replace("'", "&apos;")
+                )
+                ssml = (
+                    f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>"
+                    f"<voice name='{self.voice}'>"
+                    f"<prosody pitch='{self.pitch}' rate='{self.rate}' volume='{self.volume}'>"
+                    f"{escaped_text}"
+                    f"</prosody></voice></speak>"
+                )
+                ssml_msg = (
+                    f"X-RequestId:{req_id}\r\n"
+                    "Content-Type:application/ssml+xml\r\n"
+                    f"X-Timestamp:{ts}Z\r\n"
+                    f"Path:ssml\r\n\r\n{ssml}"
+                )
+                ws.send(ssml_msg)
+            except Exception as e:
+                if not future.done():
+                    future.set_exception(e)
 
         def on_message(event):
-            if isinstance(event.data, str):
-                if "Path:turn.end" in event.data:
-                    ws.close()
-                    if not future.done():
-                        future.set_result(b"".join(audio_chunks))
-            else:
-                asyncio.create_task(process_binary_data(event.data))
+            try:
+                if isinstance(event.data, str):
+                    if "Path:turn.end" in event.data:
+                        try:
+                            ws.close()
+                        except Exception:
+                            pass
+                        if not future.done():
+                            future.set_result(b"".join(audio_chunks))
+                else:
+                    # Binary ArrayBuffer chunk
+                    array_buffer = event.data
+                    uint8 = js.Uint8Array.new(array_buffer)
+                    if uint8.length >= 2:
+                        view = js.DataView.new(array_buffer)
+                        header_len = view.getUint16(0, False)
+                        if uint8.length > 2 + header_len:
+                            audio_slice = uint8.slice(2 + header_len)
+                            audio_chunks.append(bytes(audio_slice.to_py()))
+            except Exception as e:
+                print("Error processing WebSocket message:", e)
 
         def on_error(event):
-            ws.close()
+            try:
+                ws.close()
+            except Exception:
+                pass
             if not future.done():
                 future.set_exception(Exception("WebSocket error during web speech synthesis"))
 
@@ -257,7 +268,7 @@ class TtsService:
         ws.addEventListener("close", p_close)
 
         try:
-            audio_data = await asyncio.wait_for(future, timeout=20.0)
+            audio_data = await asyncio.wait_for(future, timeout=25.0)
             self._current_audio_data = audio_data
             self._current_audio_base64 = (
                 base64.b64encode(audio_data).decode("utf-8") if audio_data else None
@@ -315,10 +326,11 @@ class TtsService:
             raise ex
         finally:
             self._is_speaking = False
-            p_open.destroy()
-            p_msg.destroy()
-            p_err.destroy()
-            p_close.destroy()
+            for p in (p_open, p_msg, p_err, p_close):
+                try:
+                    p.destroy()
+                except Exception:
+                    pass
 
     async def stop(self) -> None:
         """Instantly stop speech and terminate playback across platforms."""
