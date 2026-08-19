@@ -179,9 +179,12 @@ class TtsService:
         audio_chunks = []
 
         def on_open(event):
+            ts = js.Date.new().toString()
+            req_id = js.crypto.randomUUID().replaceAll("-", "")
+
             # 1. Send speech.config
             config_msg = (
-                f"X-Timestamp:{js.Date.new().toISOString()}\r\n"
+                f"X-Timestamp:{ts}\r\n"
                 "Content-Type:application/json; charset=utf-8\r\n"
                 "Path:speech.config\r\n\r\n"
                 '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n'
@@ -204,10 +207,10 @@ class TtsService:
                 f"</prosody></voice></speak>"
             )
             ssml_msg = (
-                f"X-RequestId:{js.crypto.randomUUID()}\r\n"
+                f"X-RequestId:{req_id}\r\n"
                 "Content-Type:application/ssml+xml\r\n"
-                f"X-Timestamp:{js.Date.new().toISOString()}\r\n"
-                f"Path:ssml\r\n\r\n{ssml}\r\n"
+                f"X-Timestamp:{ts}Z\r\n"
+                f"Path:ssml\r\n\r\n{ssml}"
             )
             ws.send(ssml_msg)
 

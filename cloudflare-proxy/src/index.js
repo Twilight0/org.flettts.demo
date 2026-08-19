@@ -82,7 +82,7 @@ export default {
       const webSocketPair = new WebSocketPair();
       const [client, server] = Object.values(webSocketPair);
 
-      const upstreamResp = await fetch(targetUrl.toString().replace(/^http/, "ws"), {
+      const upstreamResp = await fetch(targetUrl.toString(), {
         headers: {
           Upgrade: "websocket",
           Origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
@@ -102,15 +102,23 @@ export default {
       upstreamWs.accept();
       server.accept();
 
-      server.addEventListener("message", (event) => {
+      server.addEventListener("message", async (event) => {
         try {
-          upstreamWs.send(event.data);
+          let data = event.data;
+          if (data instanceof Blob) {
+            data = await data.arrayBuffer();
+          }
+          upstreamWs.send(data);
         } catch (e) {}
       });
 
-      upstreamWs.addEventListener("message", (event) => {
+      upstreamWs.addEventListener("message", async (event) => {
         try {
-          server.send(event.data);
+          let data = event.data;
+          if (data instanceof Blob) {
+            data = await data.arrayBuffer();
+          }
+          server.send(data);
         } catch (e) {}
       });
 
