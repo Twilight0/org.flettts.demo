@@ -1,23 +1,23 @@
 import asyncio
 import base64
 import inspect
+import json
 import os
 import shutil
+import sys
 from typing import Any, Callable, Dict, List, Optional
+import urllib.request
 
-import edge_tts
+IS_WEB = sys.platform == "emscripten" or "pyodide" in sys.modules
+PROXY_URL = "https://edge-tts-proxy.twilight0.workers.dev"
+PROXY_WSS = "wss://edge-tts-proxy.twilight0.workers.dev"
 
 
 class TtsService:
     """
-    Pure Python Text-to-Speech service using Microsoft Edge Neural Voices.
-
-    Features:
-    - Real-time streaming audio playback with sub-second latency.
-    - Zero external Flutter extension dependencies.
-    - Configurable voice, rate, pitch, volume.
-    - Voice list discovery and filtering across 300+ voices.
-    - MP3 file export and raw byte / base64 access.
+    Text-to-Speech service with cross-platform support:
+    - Desktop / Native: Fast local streaming to audio pipeline via edge-tts.
+    - Web / WASM (GitHub Pages): Browser Web Audio & WebSocket via Cloudflare proxy.
     """
 
     def __init__(
@@ -42,7 +42,10 @@ class TtsService:
         self._active_player_proc: Optional[asyncio.subprocess.Process] = None
 
     async def _get_streaming_player(self) -> Optional[asyncio.subprocess.Process]:
-        """Resolve available audio player (mpv, ffplay) and open a streaming stdin pipe."""
+        """Resolve available audio player on desktop."""
+        if IS_WEB:
+            return None
+
         player_bin = shutil.which("mpv") or shutil.which("ffplay")
         if not player_bin:
             return None
@@ -74,22 +77,29 @@ class TtsService:
 
     async def speak(self, text: str, play_immediately: bool = True) -> Optional[bytes]:
         """
-        Speak the given text using real-time streaming audio playback.
-        Speech starts playing immediately as chunks stream from the network.
+        Speak text with instant playback across Desktop and Web / Pyodide.
         """
         if not text or not text.strip():
             return None
 
-        # Stop any ongoing playback first
         await self.stop()
         self._is_speaking = True
+
+        if IS_WEB:
+            return await self._speak_web(text.strip(), play_immediately)
+        else:
+            return await self._speak_native(text.strip(), play_immediately)
+
+    async def _speak_native(self, text: str, play_immediately: bool) -> Optional[bytes]:
+        """Native desktop streaming via edge-tts."""
+        import edge_tts
 
         player_proc = await self._get_streaming_player() if play_immediately else None
         self._active_player_proc = player_proc
 
         try:
             communicate = edge_tts.Communicate(
-                text=text.strip(),
+                text=text,
                 voice=self.voice,
                 rate=self.rate,
                 volume=self.volume,
@@ -105,7 +115,6 @@ class TtsService:
                     data = chunk["data"]
                     audio_chunks.append(data)
 
-                    # Pipe audio chunk immediately to player stdin
                     if player_proc and player_proc.stdin:
                         try:
                             player_proc.stdin.write(data)
@@ -113,7 +122,6 @@ class TtsService:
                         except (BrokenPipeError, ConnectionResetError):
                             break
 
-            # Close stdin so the player finishes playing the buffered stream
             if player_proc and player_proc.stdin:
                 try:
                     player_proc.stdin.close()
@@ -160,42 +168,181 @@ class TtsService:
                 except Exception:
                     pass
 
+    async def _speak_web(self, text: str, play_immediately: bool) -> Optional[bytes]:
+        """Web/Pyodide synthesis using browser WebSockets and Cloudflare Proxy."""
+        import js
+        from pyodide.ffi import create_proxy
+
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+
+        audio_chunks = []
+
+        def on_open(event):
+            # 1. Send speech.config
+            config_msg = (
+                f"X-Timestamp:{js.Date.new().toISOString()}\r\n"
+                "Content-Type:application/json; charset=utf-8\r\n"
+                "Path:speech.config\r\n\r\n"
+                '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n'
+            )
+            ws.send(config_msg)
+
+            # 2. Send SSML
+            escaped_text = (
+                text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&apos;")
+            )
+            ssml = (
+                f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>"
+                f"<voice name='{self.voice}'>"
+                f"<prosody pitch='{self.pitch}' rate='{self.rate}' volume='{self.volume}'>"
+                f"{escaped_text}"
+                f"</prosody></voice></speak>"
+            )
+            ssml_msg = (
+                f"X-RequestId:{js.crypto.randomUUID()}\r\n"
+                "Content-Type:application/ssml+xml\r\n"
+                f"X-Timestamp:{js.Date.new().toISOString()}\r\n"
+                f"Path:ssml\r\n\r\n{ssml}\r\n"
+            )
+            ws.send(ssml_msg)
+
+        async def process_binary_data(array_buffer):
+            uint8 = js.Uint8Array.new(array_buffer)
+            if uint8.length < 2:
+                return
+            view = js.DataView.new(array_buffer)
+            header_len = view.getUint16(0, False)
+            if uint8.length > 2 + header_len:
+                audio_slice = uint8.slice(2 + header_len)
+                audio_bytes = bytes(audio_slice.to_py())
+                audio_chunks.append(audio_bytes)
+
+        def on_message(event):
+            if isinstance(event.data, str):
+                if "Path:turn.end" in event.data:
+                    ws.close()
+                    if not future.done():
+                        future.set_result(b"".join(audio_chunks))
+            else:
+                asyncio.create_task(process_binary_data(event.data))
+
+        def on_error(event):
+            ws.close()
+            if not future.done():
+                future.set_exception(Exception("WebSocket error during web speech synthesis"))
+
+        def on_close(event):
+            if not future.done():
+                future.set_result(b"".join(audio_chunks))
+
+        ws = js.WebSocket.new(PROXY_WSS)
+        ws.binaryType = "arraybuffer"
+
+        p_open = create_proxy(on_open)
+        p_msg = create_proxy(on_message)
+        p_err = create_proxy(on_error)
+        p_close = create_proxy(on_close)
+
+        ws.addEventListener("open", p_open)
+        ws.addEventListener("message", p_msg)
+        ws.addEventListener("error", p_err)
+        ws.addEventListener("close", p_close)
+
+        try:
+            audio_data = await asyncio.wait_for(future, timeout=20.0)
+            self._current_audio_data = audio_data
+            self._current_audio_base64 = (
+                base64.b64encode(audio_data).decode("utf-8") if audio_data else None
+            )
+
+            if play_immediately and audio_data:
+                b64_audio = self._current_audio_base64
+                js.eval(
+                    f"if (window.__flet_tts_audio) window.__flet_tts_audio.pause();"
+                    f"window.__flet_tts_audio = new Audio('data:audio/mp3;base64,{b64_audio}');"
+                    f"window.__flet_tts_audio.play();"
+                )
+
+            if self.on_complete and audio_data:
+                data = {"bytes": len(audio_data)}
+                if inspect.iscoroutinefunction(self.on_complete):
+                    await self.on_complete(data)
+                else:
+                    self.on_complete(data)
+
+            return audio_data
+        except Exception as ex:
+            if self.on_error:
+                if inspect.iscoroutinefunction(self.on_error):
+                    await self.on_error(str(ex))
+                else:
+                    self.on_error(str(ex))
+            raise ex
+        finally:
+            self._is_speaking = False
+            p_open.destroy()
+            p_msg.destroy()
+            p_err.destroy()
+            p_close.destroy()
+
     async def stop(self) -> None:
-        """Instantly stop speech and terminate active audio player process."""
+        """Instantly stop speech and terminate playback across platforms."""
         self._is_speaking = False
-        if self._active_player_proc:
+        if IS_WEB:
             try:
-                self._active_player_proc.kill()
+                import js
+                js.eval(
+                    "if (window.__flet_tts_audio) { window.__flet_tts_audio.pause(); window.__flet_tts_audio.currentTime = 0; }"
+                )
             except Exception:
                 pass
-            self._active_player_proc = None
+        else:
+            if self._active_player_proc:
+                try:
+                    self._active_player_proc.kill()
+                except Exception:
+                    pass
+                self._active_player_proc = None
 
     async def set_voice(self, voice: str) -> None:
-        """Set active TTS voice."""
         self.voice = voice
 
     async def set_rate(self, rate: str) -> None:
-        """Set speech rate (e.g. '+0%', '-50%', '+100%')."""
         self.rate = rate
 
     async def set_volume(self, volume: str) -> None:
-        """Set volume (e.g. '+0%', '-50%', '+100%')."""
         self.volume = volume
 
     async def set_pitch(self, pitch: str) -> None:
-        """Set pitch (e.g. '+0Hz', '-50Hz', '+100Hz')."""
         self.pitch = pitch
 
     async def get_voices(self, locale_prefix: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Fetch available voices, optionally filtered by locale prefix (e.g. 'en', 'es', 'zh')."""
-        voices = await edge_tts.list_voices()
+        """Fetch available voices (via Cloudflare Proxy on Web, or edge-tts on Desktop)."""
+        if IS_WEB:
+            try:
+                req = urllib.request.Request(
+                    f"{PROXY_URL}/voices",
+                    headers={"User-Agent": "FletTTS-Web/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    voices = json.loads(resp.read().decode("utf-8"))
+            except Exception:
+                return []
+        else:
+            import edge_tts
+            voices = await edge_tts.list_voices()
+
         if locale_prefix:
             prefix = locale_prefix.lower()
             return [v for v in voices if v.get("Locale", "").lower().startswith(prefix)]
         return voices
 
     async def save_to_file(self, text: str, output_path: str) -> str:
-        """Synthesize text and save directly to an MP3 file."""
         data = await self.speak(text, play_immediately=False)
         if data:
             with open(output_path, "wb") as f:
@@ -203,14 +350,11 @@ class TtsService:
         return output_path
 
     async def get_audio_base64(self) -> Optional[str]:
-        """Get base64-encoded audio data of the last generated speech."""
         return self._current_audio_base64
 
     async def get_audio_data(self) -> Optional[bytes]:
-        """Get raw audio bytes of the last generated speech."""
         return self._current_audio_data
 
     @property
     def is_speaking(self) -> bool:
-        """Check if speech is currently active."""
         return self._is_speaking
