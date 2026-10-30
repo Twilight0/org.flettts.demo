@@ -25,8 +25,31 @@ org.flettts.demo/
 │   └── main.py          # Modern Flet application UI
 ├── tests/
 │   └── test_tts.py      # Automated test suite
+├── cloudflare-proxy/    # Cloudflare Worker that proxies WebSocket TTS for the web build
+│   └── src/
+│       ├── index.js     # CORS, /voices and WebSocket upgrade
+│       └── gec.js       # Sec-MS-GEC v2 token generation (must match edge-tts)
+├── tests/
+│   ├── test_tts.py      # Automated test suite
+│   └── test_gec_token.py # Verifies the worker's token matches edge-tts
 └── README.md
 ```
+
+---
+
+## Microsoft token changes
+
+Microsoft Edge's read-aloud endpoint requires a signed `Sec-MS-GEC` token. In
+October 2026 Microsoft switched to **v2** tokens and started rejecting the old
+ones with `HTTP 403` / `WSServerHandshakeError`, which broke both local playback
+and the web build.
+
+- **Local / desktop** — fixed by upgrading `edge-tts` to `>=7.3.1`, which
+  generates v2 tokens (`2-143.0.3650.75`).
+- **Web build** — the Cloudflare Worker builds the token itself in
+  `cloudflare-proxy/src/gec.js`. It is a 1:1 port of `edge_tts/drm.py` and must
+  be redeployed (`wrangler deploy`) whenever Microsoft changes the scheme.
+  `tests/test_gec_token.py` fails if the JS and Python implementations drift.
 
 ---
 

@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
     "flet>=0.86.5",
-    "edge-tts>=7.0.0",
+    "edge-tts>=7.3.1",
 ]
 
 [dependency-groups]

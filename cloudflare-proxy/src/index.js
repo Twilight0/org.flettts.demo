@@ -1,20 +1,8 @@
+import { generateSecMsGecV2 } from "./gec.js";
+
 const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
-const SEC_MS_GEC_VERSION = "1-143.0.3650.75";
-const WIN_EPOCH = 11644473600n;
-const S_TO_NS = 1000000000n;
-
-async function generateSecMsGec() {
-  const unixSec = BigInt(Math.floor(Date.now() / 1000));
-  let ticks = unixSec + WIN_EPOCH;
-  ticks -= ticks % 300n; // Round down to nearest 5 minutes
-  ticks *= S_TO_NS / 100n;
-
-  const strToHash = `${ticks.toString()}${TRUSTED_CLIENT_TOKEN}`;
-  const msgBuffer = new TextEncoder().encode(strToHash);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
-}
+// Microsoft moved to v2 tokens in Oct 2026; "1-" tokens now get HTTP 403.
+const SEC_MS_GEC_VERSION = "2-143.0.3650.75";
 
 function generateMuid() {
   const bytes = new Uint8Array(16);
@@ -41,7 +29,7 @@ export default {
       });
     }
 
-    const secMsGec = await generateSecMsGec();
+    const secMsGec = generateSecMsGecV2();
 
     // 2. Voice List Endpoint: /voices
     if (url.pathname === "/voices" || url.pathname === "/api/voices") {

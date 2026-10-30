@@ -167,3 +167,11 @@ build/
 # Wrangler / Cloudflare
 .wrangler/
 cloudflare-proxy/.wrangler/
+.dev.vars
+.dev.vars.*
+cloudflare-proxy/.dev.vars
+cloudflare-proxy/.dev.vars.*
+.env.*
+!.env.example
+
+.idea/
